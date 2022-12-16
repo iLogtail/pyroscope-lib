@@ -2,14 +2,11 @@ package pprof
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"sync"
 
-	"github.com/pyroscope-io/pyroscope/pkg/ingestion"
-	"github.com/pyroscope-io/pyroscope/pkg/storage"
 	"github.com/pyroscope-io/pyroscope/pkg/storage/tree"
 	"github.com/pyroscope-io/pyroscope/pkg/util/form"
 )
@@ -108,76 +105,6 @@ func (p *RawProfile) Bytes() ([]byte, error) {
 	p.RawData = b.Bytes()
 	p.FormDataContentType = mw.FormDataContentType()
 	return p.RawData, nil
-}
-
-func (p *RawProfile) Parse(ctx context.Context, putter storage.Putter, _ storage.MetricsExporter, md ingestion.Metadata) error {
-	p.m.Lock()
-	defer p.m.Unlock()
-	if len(p.Profile) == 0 && len(p.PreviousProfile) == 0 {
-		// Check if RawProfile was initialized with RawData.
-		if p.RawData == nil {
-			// Zero profile, nothing to parse.
-			return nil
-		}
-		if p.FormDataContentType != "" {
-			// The profile was ingested as a multipart form. Load parts to
-			// Profile, PreviousProfile, and SampleTypeConfig.
-			if err := p.loadPprofFromForm(); err != nil {
-				return err
-			}
-		} else {
-			p.Profile = p.RawData
-		}
-	}
-	if len(p.Profile) == 0 {
-		return nil
-	}
-
-	if p.parser == nil {
-		sampleTypes := tree.DefaultSampleTypeMapping
-		if p.SampleTypeConfig != nil {
-			sampleTypes = p.SampleTypeConfig
-		}
-		p.parser = NewParser(ParserConfig{
-			SpyName:             md.SpyName,
-			Labels:              md.Key.Labels(),
-			Putter:              putter,
-			SampleTypes:         sampleTypes,
-			SkipExemplars:       p.SkipExemplars,
-			StackFrameFormatter: StackFrameFormatterForSpyName(md.SpyName),
-		})
-
-		if p.PreviousProfile != nil {
-			// Ignore non-cumulative samples from the PreviousProfile
-			// to avoid duplicates: although, presence of PreviousProfile
-			// tells that there are cumulative sample types, it may also
-			// include regular ones.
-			filter := p.parser.sampleTypesFilter
-			p.parser.sampleTypesFilter = func(s string) bool {
-				if filter != nil {
-					return filter(s) && sampleTypes[s].Cumulative
-				}
-				return sampleTypes[s].Cumulative
-			}
-			if err := p.parser.ParsePprof(ctx, md.StartTime, md.EndTime, bytes.NewReader(p.PreviousProfile)); err != nil {
-				return err
-			}
-			p.parser.sampleTypesFilter = filter
-		}
-	}
-
-	if err := p.parser.ParsePprof(ctx, md.StartTime, md.EndTime, bytes.NewReader(p.Profile)); err != nil {
-		return err
-	}
-
-	// Propagate parser to the next profile, if it is present.
-	if p.next != nil {
-		p.next.m.Lock()
-		p.next.parser = p.parser
-		p.next.m.Unlock()
-	}
-
-	return nil
 }
 
 func (p *RawProfile) loadPprofFromForm() error {

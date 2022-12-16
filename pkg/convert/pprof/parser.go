@@ -2,18 +2,14 @@ package pprof
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
-	"github.com/pyroscope-io/pyroscope/pkg/storage"
-	"github.com/pyroscope-io/pyroscope/pkg/storage/metadata"
 	"github.com/pyroscope-io/pyroscope/pkg/storage/segment"
 	"github.com/pyroscope-io/pyroscope/pkg/storage/tree"
 )
 
 type Parser struct {
-	putter              storage.Putter
 	spyName             string
 	labels              map[string]string
 	skipExemplars       bool
@@ -25,7 +21,6 @@ type Parser struct {
 }
 
 type ParserConfig struct {
-	Putter              storage.Putter
 	SpyName             string
 	Labels              map[string]string
 	SkipExemplars       bool
@@ -38,7 +33,6 @@ func NewParser(config ParserConfig) *Parser {
 		config.StackFrameFormatter = &UnsafeFunctionNameFormatter{}
 	}
 	return &Parser{
-		putter:              config.Putter,
 		spyName:             config.SpyName,
 		labels:              config.Labels,
 		sampleTypes:         config.SampleTypes,
@@ -60,56 +54,7 @@ func filterKnownSamples(sampleTypes map[string]*tree.SampleTypeConfig) func(stri
 func (p *Parser) Reset() { p.cache = make(tree.LabelsCache) }
 
 func (p *Parser) ParsePprof(ctx context.Context, startTime, endTime time.Time, b io.Reader) error {
-	return DecodePool(b, func(profile *tree.Profile) error {
-		return p.Convert(ctx, startTime, endTime, profile)
-	})
-}
-
-func (p *Parser) Convert(ctx context.Context, startTime, endTime time.Time, profile *tree.Profile) error {
-	return p.iterate(profile, func(vt *tree.ValueType, l tree.Labels, t *tree.Tree) (keep bool, err error) {
-		if vt.Type >= int64(len(profile.StringTable)) {
-			return false, fmt.Errorf("sample value type is invalid: %d", vt.Type)
-		}
-		sampleType := profile.StringTable[vt.Type]
-		sampleTypeConfig, ok := p.sampleTypes[sampleType]
-		if !ok {
-			return false, fmt.Errorf("sample value type is unknown")
-		}
-		pi := storage.PutInput{
-			StartTime: startTime,
-			EndTime:   endTime,
-			SpyName:   p.spyName,
-			Val:       t,
-		}
-		// Cumulative profiles require two consecutive samples,
-		// therefore we have to cache this trie.
-		if sampleTypeConfig.Cumulative {
-			prev, found := p.load(vt.Type, l)
-			if !found {
-				// Keep the current entry in cache.
-				return true, nil
-			}
-			// Take diff with the previous tree.
-			// The result is written to prev, t is not changed.
-			pi.Val = prev.Diff(t)
-		}
-		pi.AggregationType = sampleTypeConfig.Aggregation
-		if sampleTypeConfig.Sampled {
-			pi.SampleRate = sampleRate(profile)
-		}
-		if sampleTypeConfig.DisplayName != "" {
-			sampleType = sampleTypeConfig.DisplayName
-		}
-		if sampleTypeConfig.Units != "" {
-			pi.Units = sampleTypeConfig.Units
-		} else {
-			// TODO(petethepig): this conversion is questionable
-			pi.Units = metadata.Units(profile.StringTable[vt.Unit])
-		}
-		pi.Key = p.buildName(sampleType, profile.ResolveLabels(l))
-		err = p.putter.Put(ctx, &pi)
-		return sampleTypeConfig.Cumulative, err
-	})
+	return nil
 }
 
 func sampleRate(p *tree.Profile) uint32 {
